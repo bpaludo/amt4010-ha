@@ -1,0 +1,15 @@
+{
+  "domain": "amt4010",
+  "name": "Intelbras AMT 4010",
+  "codeowners": [
+    "@bpaludo"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/bpaludo/amt4010-ha",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/bpaludo/amt4010-ha/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

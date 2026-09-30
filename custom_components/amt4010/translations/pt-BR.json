@@ -1,0 +1,201 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Intelbras AMT 4010",
+        "description": "Conexão local com uma AMT 4010 na porta TCP 9009. A central só é lida até os comandos serem habilitados nas opções.",
+        "data": {
+          "host": "IP da central",
+          "port": "Porta TCP",
+          "password": "Senha master ou de usuário"
+        },
+        "data_description": {
+          "password": "4 ou 6 dígitos. A senha de acesso remoto não é aceita por este protocolo."
+        }
+      },
+      "reauth_confirm": {
+        "title": "A central recusou a senha",
+        "description": "Digite a senha master ou de usuário atual (4 ou 6 dígitos). A leitura parou para que a senha errada não seja repetida na central.",
+        "data": {
+          "password": "Senha master ou de usuário"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Não foi possível alcançar a central. Confira o IP, a porta e se outro aplicativo está conectado.",
+      "invalid_auth": "A central recusou a senha.",
+      "not_amt4010": "O aparelho respondeu, mas não como uma AMT 4010.",
+      "invalid_password_format": "A senha deve ter 4 ou 6 dígitos.",
+      "unknown": "Erro inesperado. Veja o log do Home Assistant."
+    },
+    "abort": {
+      "already_configured": "Esta central já está configurada.",
+      "reauth_successful": "Senha atualizada."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opções da AMT 4010",
+        "description": "Leitura, comandos, partições e zonas.",
+        "data": {
+          "scan_interval": "Intervalo de leitura (segundos)",
+          "enable_commands": "Habilitar arme/desarme",
+          "code_arm_required": "Exigir código para armar",
+          "partitions": "Partições em uso",
+          "zones": "Zonas com entidade"
+        },
+        "data_description": {
+          "enable_commands": "Desligado por padrão. Ligue só depois de conferir as partições no teclado.",
+          "partitions": "O status diz quais partições estão armadas, não quais existem; isto decide quando a central conta como toda armada.",
+          "zones": "Vazio = as zonas com nome gravado na central. Ou uma lista como 1-8, 12."
+        }
+      }
+    },
+    "error": {
+      "invalid_zones": "Use números de zona de 1 a 64, ex.: 1-8, 12.",
+      "no_partitions": "Escolha ao menos uma partição."
+    }
+  },
+  "selector": {
+    "zone_device_class": {
+      "options": {
+        "none": "Liga/desliga",
+        "door": "Porta",
+        "window": "Janela",
+        "motion": "Movimento",
+        "smoke": "Fumaça",
+        "vibration": "Vibração",
+        "garage_door": "Portão de garagem"
+      }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "alarm_triggered": "Alarme disparado"
+    }
+  },
+  "entity": {
+    "alarm_control_panel": {
+      "panel": {
+        "name": "Central"
+      },
+      "partition": {
+        "name": "Partição {partition}"
+      }
+    },
+    "binary_sensor": {
+      "zone": {
+        "name": "Zona {zone}"
+      },
+      "siren": {
+        "name": "Sirene"
+      },
+      "panel_link": {
+        "name": "Comunicação com a central"
+      },
+      "ac_failure": {
+        "name": "Falta de energia (AC)"
+      },
+      "panel_battery": {
+        "name": "Problema na bateria da central"
+      },
+      "aux_overload": {
+        "name": "Sobrecarga na saída auxiliar"
+      },
+      "siren_wiring": {
+        "name": "Problema na fiação da sirene"
+      },
+      "phone_line": {
+        "name": "Linha telefônica cortada"
+      },
+      "event_communication": {
+        "name": "Falha ao comunicar evento"
+      },
+      "bus_problem": {
+        "name": "Problema em teclado, receptor ou expansor"
+      },
+      "keypad_tamper": {
+        "name": "Tamper do teclado"
+      },
+      "panel_problem": {
+        "name": "Central indica problema"
+      },
+      "zones_violated": {
+        "name": "Zonas violadas"
+      },
+      "zones_bypassed": {
+        "name": "Zonas anuladas"
+      },
+      "zones_tamper": {
+        "name": "Zonas com tamper"
+      },
+      "zones_short_circuit": {
+        "name": "Zonas em curto"
+      },
+      "zones_low_battery": {
+        "name": "Sensores com bateria baixa"
+      }
+    },
+    "sensor": {
+      "open_zones": {
+        "name": "Zonas abertas"
+      },
+      "panel_clock": {
+        "name": "Relógio da central"
+      }
+    },
+    "button": {
+      "read_zone_names": {
+        "name": "Reler nomes das zonas"
+      }
+    },
+    "event": {
+      "alarm": {
+        "name": "Disparo",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "alarm_triggered": "Alarme disparado"
+            }
+          }
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "commands_disabled": {
+      "message": "Arme/desarme está desabilitado para esta central. Habilite nas opções da integração."
+    },
+    "invalid_code": {
+      "message": "Código do alarme incorreto."
+    },
+    "zones_open": {
+      "message": "A central recusou armar: há zonas abertas. Nada mudou."
+    },
+    "not_partitioned": {
+      "message": "A central recusou: ela não está particionada. Nada mudou."
+    },
+    "no_permission": {
+      "message": "A central recusou: este usuário não pode desarmar. Nada mudou."
+    },
+    "partition_without_zones": {
+      "message": "A central recusou: esta partição não tem zonas habilitadas. Nada mudou."
+    },
+    "rejected": {
+      "message": "A central recusou o comando ({code}). Nada mudou."
+    },
+    "password_refused": {
+      "message": "A central recusou a senha salva. Nada mudou; atualize a senha na integração."
+    },
+    "ambiguous": {
+      "message": "Resultado desconhecido: a central pode ou não ter aplicado o comando. Não repita; confira o teclado antes."
+    },
+    "not_sent": {
+      "message": "Não foi possível alcançar a central; o comando não foi enviado. Nada mudou."
+    },
+    "not_read_back": {
+      "message": "A central aceitou o comando, mas o estado não pôde ser relido. Confira o teclado."
+    }
+  }
+}

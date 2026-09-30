@@ -1,0 +1,201 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Intelbras AMT 4010",
+        "description": "Local connection to an AMT 4010 on TCP port 9009. The panel is only read until commands are enabled in the options.",
+        "data": {
+          "host": "Panel IP address",
+          "port": "TCP port",
+          "password": "Master or user password"
+        },
+        "data_description": {
+          "password": "4 or 6 digits. The remote-access password is not accepted by this protocol."
+        }
+      },
+      "reauth_confirm": {
+        "title": "The panel refused the password",
+        "description": "Type the current master or user password (4 or 6 digits). Polling stopped so a wrong password is not repeated at the panel.",
+        "data": {
+          "password": "Master or user password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the panel. Check the IP address, the port and whether another app is connected.",
+      "invalid_auth": "The panel refused the password.",
+      "not_amt4010": "The device answered, but not like an AMT 4010.",
+      "invalid_password_format": "The password must have 4 or 6 digits.",
+      "unknown": "Unexpected error. See the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This panel is already configured.",
+      "reauth_successful": "Password updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AMT 4010 options",
+        "description": "Polling, commands, partitions and zones.",
+        "data": {
+          "scan_interval": "Polling interval (seconds)",
+          "enable_commands": "Enable arm/disarm",
+          "code_arm_required": "Require the code to arm",
+          "partitions": "Partitions in use",
+          "zones": "Zones with an entity"
+        },
+        "data_description": {
+          "enable_commands": "Off by default. Turn on only after the partitions have been checked against the keypad.",
+          "partitions": "The status reports which partitions are armed, not which exist; this decides when the panel counts as fully armed.",
+          "zones": "Empty = the zones with a name programmed in the panel. Or a list such as 1-8, 12."
+        }
+      }
+    },
+    "error": {
+      "invalid_zones": "Use zone numbers 1-64, e.g. 1-8, 12.",
+      "no_partitions": "Choose at least one partition."
+    }
+  },
+  "selector": {
+    "zone_device_class": {
+      "options": {
+        "none": "On/off",
+        "door": "Door",
+        "window": "Window",
+        "motion": "Motion",
+        "smoke": "Smoke",
+        "vibration": "Vibration",
+        "garage_door": "Garage door"
+      }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "alarm_triggered": "Alarm triggered"
+    }
+  },
+  "entity": {
+    "alarm_control_panel": {
+      "panel": {
+        "name": "Panel"
+      },
+      "partition": {
+        "name": "Partition {partition}"
+      }
+    },
+    "binary_sensor": {
+      "zone": {
+        "name": "Zone {zone}"
+      },
+      "siren": {
+        "name": "Siren"
+      },
+      "panel_link": {
+        "name": "Panel communication"
+      },
+      "ac_failure": {
+        "name": "AC power failure"
+      },
+      "panel_battery": {
+        "name": "Panel battery problem"
+      },
+      "aux_overload": {
+        "name": "Auxiliary output overload"
+      },
+      "siren_wiring": {
+        "name": "Siren wiring problem"
+      },
+      "phone_line": {
+        "name": "Phone line cut"
+      },
+      "event_communication": {
+        "name": "Event reporting failure"
+      },
+      "bus_problem": {
+        "name": "Keypad, receiver or expander problem"
+      },
+      "keypad_tamper": {
+        "name": "Keypad tamper"
+      },
+      "panel_problem": {
+        "name": "Panel reports a problem"
+      },
+      "zones_violated": {
+        "name": "Violated zones"
+      },
+      "zones_bypassed": {
+        "name": "Bypassed zones"
+      },
+      "zones_tamper": {
+        "name": "Zones with tamper"
+      },
+      "zones_short_circuit": {
+        "name": "Zones with short circuit"
+      },
+      "zones_low_battery": {
+        "name": "Sensors with low battery"
+      }
+    },
+    "sensor": {
+      "open_zones": {
+        "name": "Open zones"
+      },
+      "panel_clock": {
+        "name": "Panel clock"
+      }
+    },
+    "button": {
+      "read_zone_names": {
+        "name": "Read zone names again"
+      }
+    },
+    "event": {
+      "alarm": {
+        "name": "Alarm",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "alarm_triggered": "Alarm triggered"
+            }
+          }
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "commands_disabled": {
+      "message": "Arm/disarm is disabled for this panel. Enable it in the integration options."
+    },
+    "invalid_code": {
+      "message": "Wrong alarm code."
+    },
+    "zones_open": {
+      "message": "The panel refused to arm: zones are open. Nothing changed."
+    },
+    "not_partitioned": {
+      "message": "The panel refused: it is not partitioned. Nothing changed."
+    },
+    "no_permission": {
+      "message": "The panel refused: this user may not disarm. Nothing changed."
+    },
+    "partition_without_zones": {
+      "message": "The panel refused: this partition has no enabled zones. Nothing changed."
+    },
+    "rejected": {
+      "message": "The panel refused the command ({code}). Nothing changed."
+    },
+    "password_refused": {
+      "message": "The panel refused the stored password. Nothing changed; update the password in the integration."
+    },
+    "ambiguous": {
+      "message": "Unknown result: the panel may or may not have applied the command. Do not repeat it; check the keypad first."
+    },
+    "not_sent": {
+      "message": "The panel could not be reached; the command was not sent. Nothing changed."
+    },
+    "not_read_back": {
+      "message": "The panel accepted the command, but its state could not be read back. Check the keypad."
+    }
+  }
+}
