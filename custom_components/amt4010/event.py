@@ -1,4 +1,4 @@
-"""Event entity: fires on the rising edge of the alarm (siren or firing zones)."""
+"""Event entity: one per alarm episode (state.AlarmTracker decides)."""
 from __future__ import annotations
 
 from homeassistant.components.event import EventEntity

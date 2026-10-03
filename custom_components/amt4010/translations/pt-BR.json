@@ -91,6 +91,9 @@
       "siren": {
         "name": "Sirene"
       },
+      "alarm_memory": {
+        "name": "Memória de disparo"
+      },
       "panel_link": {
         "name": "Comunicação com a central"
       },

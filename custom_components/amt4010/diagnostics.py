@@ -55,6 +55,12 @@ async def async_get_config_entry_diagnostics(
             "partitions_armed": status.partitions_armed,
             "partitions_stay": status.partitions_stay,
             "general": f"0x{status.general:02x}",
+            "alarm": {
+                "siren_confirmed": coordinator.alarm.siren,
+                "partitions_alarmed": sorted(coordinator.alarm.alarmed),
+                "alarm_memory": status.alarm_memory,
+                "tracker": coordinator._tracker.snapshot(),
+            },
             "clock": status.clock.isoformat() if status.clock else None,
             "siren_bits": status.siren_bits(),
             "battery": status.battery_details(),

@@ -7,7 +7,8 @@ import pytest
 from homeassistant import config_entries
 from homeassistant.components import automation
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
@@ -65,8 +66,8 @@ async def test_entities_and_names(hass: HomeAssistant, fake_panel) -> None:
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
     ids = {e.entity_id for e in entities}
     # panel + A + B, 3 named zones ("Zona NN" is the default = no name), siren,
-    # link, 9 problems, 5 zone flags, 2 sensors, button, event
-    assert len(entities) == 3 + 3 + 1 + 1 + 9 + 5 + 2 + 1 + 1, sorted(ids)
+    # alarm memory, link, 9 problems, 5 zone flags, 2 sensors, button, event
+    assert len(entities) == 3 + 3 + 1 + 1 + 1 + 9 + 5 + 2 + 1 + 1, sorted(ids)
     assert {"binary_sensor.amt_4010_zona_01", "binary_sensor.amt_4010_zona_03"} <= ids
     assert hass.states.get("binary_sensor.amt_4010_zona_03").attributes["friendly_name"] == (
         "AMT 4010 03 Garagem"
@@ -100,6 +101,7 @@ async def test_entity_ids_in_portuguese(hass: HomeAssistant, fake_panel) -> None
         "alarm_control_panel.amt_4010_particao_b",
         "binary_sensor.amt_4010_zona_01",
         "binary_sensor.amt_4010_sirene",
+        "binary_sensor.amt_4010_memoria_de_disparo",
         "binary_sensor.amt_4010_comunicacao_com_a_central",
         "binary_sensor.amt_4010_falta_de_energia_ac",
         "binary_sensor.amt_4010_zonas_violadas",
@@ -251,7 +253,7 @@ async def test_stale_then_unavailable_then_back(hass: HomeAssistant, fake_panel)
 
 
 async def test_alarm_event_and_device_trigger_per_device(
-    hass: HomeAssistant, fake_panel, second_panel
+    hass: HomeAssistant, fake_panel, second_panel, freezer
 ) -> None:
     first = await setup_entry(hass, fake_panel)
     second = await setup_entry(hass, second_panel)
@@ -275,18 +277,35 @@ async def test_alarm_event_and_device_trigger_per_device(
 
     second_panel.status[29] = 0x02  # siren on the second panel
     await refresh(hass, second)
+    assert len(bus) == 0  # one read is not a siren yet (confirmation beep)
+    freezer.tick(5)
+    await refresh(hass, second)
     assert len(bus) == 1 and len(fired) == 0
 
-    fake_panel.status[29] = 0x04  # silent alarm on the first
-    fake_panel.status[8] = 0x04  # zone 3 violated
+    fake_panel.status[27] = 0x01  # A armed on the first
     await refresh(hass, first)
-    await refresh(hass, first)  # still active: no second edge
+    fake_panel.status[29] = 0x44  # silent alarm: zone 3 violated, bits 2 + 6
+    fake_panel.status[8] = 0x04
+    await refresh(hass, first)
+    await refresh(hass, first)  # still live: no second event
     assert len(fired) == 1 and len(bus) == 2
     assert bus[1].data["device_id"] == first_device.id
     assert bus[1].data["violated_zones"] == ["03 Garagem"]
+    assert bus[1].data["new_violated_zones"] == ["03 Garagem"]
+    assert bus[1].data["partitions_alarmed"] == ["A"]
     event = hass.states.get(eid(hass, first, "alarm_event"))
     assert event.attributes["event_type"] == "alarm_triggered"
     assert hass.states.get(eid(hass, first, "panel")).state == "triggered"
+    assert hass.states.get(eid(hass, first, "partition_a")).state == "triggered"
+    assert hass.states.get(eid(hass, first, "partition_b")).state == "disarmed"
+    # disarmed: the memory stays, the alarm state does not
+    fake_panel.status[27] = 0x00
+    await refresh(hass, first)
+    assert hass.states.get(eid(hass, first, "panel")).state == "disarmed"
+    assert hass.states.get(eid(hass, first, "partition_a")).state == "disarmed"
+    memory = hass.states.get(eid(hass, first, "alarm_memory"))
+    assert (memory.state, memory.attributes["zones"]) == ("on", ["03 Garagem"])
+    assert len(bus) == 2
 
 
 async def test_diagnostics_without_password(hass: HomeAssistant, fake_panel) -> None:
@@ -511,21 +530,27 @@ async def test_refused_password_survives_a_restart(hass: HomeAssistant, fake_pan
 
 
 async def test_alarm_already_active_is_not_a_new_alarm_after_restart(
-    hass: HomeAssistant, fake_panel
+    hass: HomeAssistant, fake_panel, freezer
 ) -> None:
     """Contra-assinatura, achado 2: one event per alarm, not one per reload."""
     entry = await setup_entry(hass, fake_panel)
     bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
     fake_panel.status[29] = 0x02
     await refresh(hass, entry)
-    await hass.async_block_till_done()
+    freezer.tick(5)
+    await refresh(hass, entry)
+    assert len(bus) == 1
     for _ in range(3):
         await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
+        freezer.tick(5)
+        await refresh(hass, entry)  # the siren confirmed again: same episode
     assert len(bus) == 1
     fake_panel.status[29] = 0x00
     await refresh(hass, entry)
     fake_panel.status[29] = 0x02  # a second, real alarm
+    await refresh(hass, entry)
+    freezer.tick(5)
     await refresh(hass, entry)
     assert len(bus) == 2
 
@@ -550,7 +575,8 @@ async def test_alarm_that_began_while_down_reaches_the_event_entity(
     event_id = eid(hass, entry, "alarm_event")
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
-    fake_panel.status[29] = 0x02  # the alarm starts with the integration down
+    fake_panel.status[27] = 0x01  # A armed, zone 3 violated with the integration down
+    fake_panel.status[8] = 0x04
     bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -560,3 +586,155 @@ async def test_alarm_that_began_while_down_reaches_the_event_entity(
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert len(bus) == 1
+
+
+# AMT 4010 fw 6.6, field capture (diagnostics, no extra connection), with the
+# clock and the zone number replaced: the panel disarmed more than a day after
+# an alarm, no zone open, one zone still in the violated map, general 0x44
+# (bits 2 and 6). 0.1.0 showed the panel and every partition "triggered"
+# all that time.
+FIELD_MEMORY = bytes.fromhex(
+    "00 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 41 66 01 00"
+    " 00 44 10 3a 1d 09 1a 00 00 00 00 00 0f 00 00 00 00 00 00 00 00 00 00 00 00 00"
+)
+
+
+async def test_field_memory_is_disarmed_with_memory(hass: HomeAssistant, fake_panel) -> None:
+    fake_panel.status[:] = FIELD_MEMORY
+    bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
+    entry = await setup_entry(hass, fake_panel, partitions=["A", "B", "C"])
+    for key in ("panel", "partition_a", "partition_b", "partition_c"):
+        assert hass.states.get(eid(hass, entry, key)).state == "disarmed", key
+    memory = hass.states.get(eid(hass, entry, "alarm_memory"))
+    assert memory.state == "on"
+    assert memory.attributes["general_bit2"] and memory.attributes["general_bit6"]
+    panel = hass.states.get(eid(hass, entry, "panel"))
+    assert panel.attributes["general_byte"] == "0x44"
+    assert panel.attributes["alarm_memory"] is True
+    assert len(bus) == 0  # memory is not a new alarm
+    text = str(await async_get_config_entry_diagnostics(hass, entry))
+    assert "'tracker': {'violated': [3]" in text
+
+
+async def test_upgrade_from_010_keeps_quiet(hass: HomeAssistant, fake_panel, hass_storage) -> None:
+    """0.1.0 stored only "alarm_active" (here True, from the latched bit): the
+    first read of 0.1.1 is memory, not an alarm."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="AMT 4010",
+        entry_id="upgrade",
+        data={"host": "127.0.0.1", "port": fake_panel.port, "password": PASSWORD},
+        options={"scan_interval": 5, "partitions": ["A", "B", "C"]},
+        unique_id=f"127.0.0.1:{fake_panel.port}",
+    )
+    hass_storage[f"{DOMAIN}.upgrade.state"] = {
+        "version": 1, "minor_version": 1, "key": f"{DOMAIN}.upgrade.state",
+        "data": {"password_refused": False, "alarm_active": True},
+    }
+    fake_panel.status[:] = FIELD_MEMORY
+    bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(eid(hass, entry, "panel")).state == "disarmed"
+    assert len(bus) == 0
+    # next arm of B, then a new zone: the alarm 0.1.0 would have missed
+    fake_panel.status[27] = 0x02
+    await refresh(hass, entry)
+    fake_panel.status[8] |= 0x10  # zone 5
+    await refresh(hass, entry)
+    assert len(bus) == 1 and bus[0].data["partitions_alarmed"] == ["B"]
+    assert bus[0].data["new_violated_zones"] == ["05"]  # names not read yet here
+    assert hass.states.get(eid(hass, entry, "partition_b")).state == "triggered"
+    assert hass.states.get(eid(hass, entry, "partition_a")).state == "disarmed"
+
+
+async def test_status_logged_only_when_it_changes(
+    hass: HomeAssistant, fake_panel, caplog
+) -> None:
+    caplog.set_level("INFO", logger="custom_components.amt4010")
+    entry = await setup_entry(hass, fake_panel)
+    lines = lambda: [r for r in caplog.records if "AMT 4010 status:" in r.getMessage()]
+    assert len(lines()) == 1  # the first read
+    fake_panel.status[31] = 0x3B  # the clock moved: not logged
+    await refresh(hass, entry)
+    assert len(lines()) == 1
+    fake_panel.status[0] = 0x01  # zone 1 opened: every door would be a line
+    await refresh(hass, entry)
+    assert len(lines()) == 1
+    fake_panel.status[8] = 0x01  # zone 1 violated
+    await refresh(hass, entry)
+    assert len(lines()) == 2
+    assert "general 0x00" in lines()[-1].getMessage()
+    assert PASSWORD not in caplog.text and "39 38 37 36" not in caplog.text
+
+
+async def test_rollback_to_010_finds_alarm_active(
+    hass: HomeAssistant, fake_panel, hass_storage
+) -> None:
+    """Contra-assinatura r4, m4: 0.1.0 reads only "alarm_active"; with memory
+    present it must find it True, or a rollback raises a false alarm."""
+    fake_panel.status[:] = FIELD_MEMORY
+    entry = await setup_entry(hass, fake_panel)
+    await hass.async_block_till_done()
+    saved = hass_storage[f"{DOMAIN}.{entry.entry_id}.state"]["data"]
+    assert saved["alarm_active"] is True
+    assert saved["alarm"]["violated"] == [3]
+
+
+async def test_event_waits_for_startup(hass: HomeAssistant, fake_panel) -> None:
+    """Contra-assinatura r4, o2: an alarm seen by the first read of the 04:02
+    restart reaches the bus once Home Assistant has started, when automations
+    have attached their device triggers."""
+    entry = await setup_entry(hass, fake_panel)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    fake_panel.status[27] = 0x01  # A armed, zone 3 violated meanwhile
+    fake_panel.status[8] = 0x04
+    hass.set_state(CoreState.starting)
+    bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert len(bus) == 0
+    assert hass.states.get(eid(hass, entry, "panel")).state == "triggered"
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert len(bus) == 1 and bus[0].data["new_violated_zones"] == ["03 Garagem"]
+
+
+async def test_event_fires_while_stopping(hass: HomeAssistant, fake_panel) -> None:
+    """Contra-assinatura r2, R5: a poll that ends while Home Assistant stops
+    must not wait for a STARTED that will not come again."""
+    entry = await setup_entry(hass, fake_panel)
+    bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
+    fake_panel.status[27] = 0x01
+    await refresh(hass, entry)
+    hass.set_state(CoreState.stopping)
+    fake_panel.status[8] = 0x04
+    await refresh(hass, entry)
+    assert len(bus) == 1
+    hass.set_state(CoreState.running)
+
+
+async def test_rollback_flag_is_not_written_on_every_door(
+    hass: HomeAssistant, fake_panel, hass_storage, freezer
+) -> None:
+    """Contra-assinatura r2, R4: general bit 2 may follow open zones; the 0.1.0
+    flag it feeds is written late, not on every change."""
+    entry = await setup_entry(hass, fake_panel)
+    key = f"{DOMAIN}.{entry.entry_id}.state"
+    async_fire_time_changed(hass)  # the frozen clock: let the first write run
+    await hass.async_block_till_done()
+    assert hass_storage[key]["data"]["alarm_active"] is False
+    fake_panel.status[29] = 0x04  # bit 2 only (a door opened, per Pehesi97 #10)
+    fake_panel.status[0] = 0x01
+    await refresh(hass, entry)
+    freezer.tick(1)  # an immediate write would run now
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass_storage[key]["data"]["alarm_active"] is False  # not yet
+    freezer.tick(300)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert hass_storage[key]["data"]["alarm_active"] is True

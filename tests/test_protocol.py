@@ -71,7 +71,7 @@ class T3StatusParser(unittest.TestCase):
         self.assertEqual(s.partitions_armed, dict.fromkeys("ABCD", False))
         self.assertEqual(s.partitions_stay, dict.fromkeys("ABCD", False))  # fw 6.6 >= 5.7
         self.assertEqual(s.clock, dt.datetime(2026, 9, 29, 16, 58))
-        self.assertFalse(s.alarm_active or s.armed_flag or s.problem_flag)
+        self.assertFalse(s.alarm_memory or s.armed_flag or s.problem_flag or s.siren_on)
         self.assertFalse(
             s.ac_failure or s.battery_problem or s.aux_overload or s.siren_wiring_problem
             or s.phone_line_cut or s.event_comm_failure or s.bus_problem or s.keypads_tampered
@@ -103,10 +103,12 @@ class T3StatusParser(unittest.TestCase):
             (361, 27, 0x02, lambda s: s.partitions_armed["B"] and not s.partitions_armed["A"]),
             (366, 28, 0x01, lambda s: s.partitions_armed["C"]),
             (366, 28, 0x02, lambda s: s.partitions_armed["D"]),
-            (370, 29, 0x01, lambda s: s.problem_flag and not s.alarm_active),
-            (370, 29, 0x02, lambda s: s.siren_on and s.alarm_active),
-            (370, 29, 0x04, lambda s: s.zones_firing and s.alarm_active and not s.siren_on),
-            (370, 29, 0x08, lambda s: s.armed_flag and not s.alarm_active),
+            (370, 29, 0x01, lambda s: s.problem_flag and not s.siren_on),
+            (370, 29, 0x02, lambda s: s.siren_on and not s.alarm_memory),
+            # bit 2 is raw only: not memory, not siren (field, 2026-10-01)
+            (370, 29, 0x04, lambda s: s.zones_firing and not s.alarm_memory and not s.siren_on),
+            (370, 29, 0x08, lambda s: s.armed_flag and not s.siren_on),
+            (370, 29, 0x40, lambda s: s.trigger_latched and s.alarm_memory),
             (387, 35, 0x01, lambda s: s.ac_failure and not s.battery_problem),
             (387, 35, 0x02, lambda s: s.battery_problem and s.battery_details()["low"]),
             (387, 35, 0x04, lambda s: s.battery_details()["missing_or_reversed"]),

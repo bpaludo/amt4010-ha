@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, CoreState, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -36,13 +38,20 @@ from .const import (
     NAME_RETRY_SECONDS,
 )
 from .protocol import Status
-from .state import known_zones, zone_label
+from .state import QUIET, AlarmTracker, AlarmView, known_zones, zone_label
 
 _LOGGER = logging.getLogger(__name__)
 
 type Amt4010ConfigEntry = ConfigEntry[Amt4010Coordinator]
 
 STORE_VERSION = 1
+# The rollback flag changes with general bit 2 (possibly with every first door
+# opened): written late, the final write at shutdown covers a rollback.
+ROLLBACK_FLAG_SAVE_DELAY = 300
+# Status bytes logged on change: everything except open zones (0-7, every door
+# would be a line; general bit 2, if it follows them, still shows), the clock
+# (30-34, every minute) and the keypad battery icon (40, it blinks).
+_WATCHED_BYTES = tuple(i for i in range(54) if i >= 8 and not 30 <= i <= 34 and i != 40)
 
 
 def zone_name_store(hass: HomeAssistant, entry_id: str) -> Store:
@@ -50,7 +59,7 @@ def zone_name_store(hass: HomeAssistant, entry_id: str) -> Store:
 
 
 def state_store(hass: HomeAssistant, entry_id: str) -> Store:
-    """What must survive a restart: a refused password and the alarm edge."""
+    """What must survive a restart: a refused password and the alarm tracker."""
     return Store(hass, STORE_VERSION, f"{DOMAIN}.{entry_id}.state")
 
 
@@ -90,14 +99,16 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
         self.last_failure: str | None = None
         self.stale_since: datetime | None = None
         self._health_listeners: list[Callable[[], None]] = []
-        # Alarm edge, shared by the bus event and the event entity.
-        self._alarm_active = False  # loaded from state_store at setup
+        # Alarm now versus memory (state.AlarmTracker), loaded at setup; the
+        # event count is shared by the bus event and the event entity.
+        self._tracker = AlarmTracker()
+        self.alarm: AlarmView = QUIET
         self.alarm_edges = 0
         self.last_alarm_data: dict | None = None
         # Zone names: read from the panel once, kept in storage.
         self._store = zone_name_store(hass, entry.entry_id)
         self._state_store = state_store(hass, entry.entry_id)
-        self._state: dict = {"password_refused": False, "alarm_active": False}
+        self._state: dict = {"password_refused": False, "alarm": None, "alarm_active": False}
         self.zone_names: dict[int, str | None] = {}
         self.names_read_at: str | None = None
         self.names_last_error: str | None = None
@@ -145,10 +156,13 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
             cache[entry_id] = {
                 "password_refused": bool(stored.get("password_refused")),
                 "alarm_active": bool(stored.get("alarm_active")),
+                # 0.1.0 kept only "alarm_active" (one bit, the wrong one): no
+                # tracker means the first read is taken as memory, no event.
+                "alarm": stored.get("alarm"),
             }
         self._state = cache[entry_id]
-        # An alarm already active before the restart is not a new alarm.
-        self._alarm_active = self._state["alarm_active"]
+        # What the panel showed before the restart is not a new alarm.
+        self._tracker = AlarmTracker.restore(self._state.get("alarm"))
         return self._state["password_refused"]
 
     # -- health -----------------------------------------------------------
@@ -233,8 +247,24 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
         self.last_failure = None
         self.stale_since = None
         self.update_interval = timedelta(seconds=self._base_interval)
+        self._log_change(self._last_status, status)
         self._last_status = status
         self._track_alarm(status)
+
+    @staticmethod
+    def _log_change(old: Status | None, new: Status) -> None:
+        """The raw status when what decides alarm states changes (zones,
+        partitions, general byte, power, problems, siren). Field record for
+        the bits still unproven; the status carries no credential."""
+        if old is not None and all(old.raw[i] == new.raw[i] for i in _WATCHED_BYTES):
+            return
+        _LOGGER.info(
+            "AMT 4010 status: general 0x%02x, partitions 0x%02x 0x%02x, raw %s",
+            new.general,
+            new.raw[27],
+            new.raw[28],
+            new.raw.hex(" "),
+        )
 
     async def async_reconcile(self) -> bool:
         """Strict read after a command: the cached status never confirms one."""
@@ -258,29 +288,56 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
         return device.id if device else None
 
     def _track_alarm(self, status: Status) -> None:
-        if status.alarm_active and not self._alarm_active:
+        self.alarm = self._tracker.update(status, time.monotonic())
+        if self.alarm.fire_event:
             self.alarm_edges += 1
             self.last_alarm_data = {
                 "open_zones": [self.zone_label(z) for z in sorted(status.open_zones)],
                 "violated_zones": [
                     self.zone_label(z) for z in sorted(status.violated_zones)
                 ],
-                "siren": status.siren_on,
+                "new_violated_zones": [
+                    self.zone_label(z) for z in sorted(self.alarm.new_zones)
+                ],
+                "siren": status.siren_any,
                 "zones_firing": status.zones_firing,
                 "partitions_armed": [
                     p for p, armed in status.partitions_armed.items() if armed
                 ],
+                "partitions_alarmed": sorted(self.alarm.alarmed),
             }
-            self.hass.bus.async_fire(
-                EVENT_ALARM_TRIGGERED,
-                {
-                    "device_id": self.device_id,
-                    "entry_id": self.config_entry.entry_id,
-                    **self.last_alarm_data,
-                },
+            payload = dict(self.last_alarm_data)
+
+            @callback
+            def fire(hass: HomeAssistant) -> None:
+                # During startup (the 04:02 restart) automations attach their
+                # device triggers only when Home Assistant has started.
+                hass.bus.async_fire(
+                    EVENT_ALARM_TRIGGERED,
+                    {
+                        "device_id": self.device_id,
+                        "entry_id": self.config_entry.entry_id,
+                        **payload,
+                    },
+                )
+
+            if self.hass.state in (CoreState.not_running, CoreState.starting):
+                async_at_started(self.hass, fire)
+            else:
+                # Running, or already stopping: STARTED will not come again in
+                # this process, and the snapshot already holds the zone.
+                fire(self.hass)
+        snapshot = self._tracker.snapshot()
+        # "alarm_active" in 0.1.0's meaning, so a rollback to 0.1.0 does not
+        # take memory that is already there for a new alarm.
+        active = status.siren_on or status.zones_firing
+        if self._state.get("alarm") != snapshot:
+            self._save_state(alarm=snapshot, alarm_active=active)
+        elif self._state.get("alarm_active") != active:
+            self._state["alarm_active"] = active
+            self._state_store.async_delay_save(
+                lambda: dict(self._state), ROLLBACK_FLAG_SAVE_DELAY
             )
-        self._alarm_active = status.alarm_active
-        self._save_state(alarm_active=status.alarm_active)
 
     # -- options-derived --------------------------------------------------
     @property

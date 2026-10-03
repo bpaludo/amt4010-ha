@@ -174,7 +174,9 @@ class Amt4010Panel(_Commandable):
         status = self.coordinator.data
         if status is None:
             return None
-        state = panel_state(status, self.coordinator.partitions_in_use)
+        state = panel_state(
+            status, self.coordinator.partitions_in_use, self.coordinator.alarm
+        )
         if state is None:
             signature = f"{status.raw[27]:02x}{status.raw[28]:02x}{status.general:02x}"
             if signature != self._warned:
@@ -197,11 +199,16 @@ class Amt4010Panel(_Commandable):
         status = self.coordinator.data
         if status is None:
             return {}
+        alarm = self.coordinator.alarm
         return {
             "partitioned": status.partitioned,
             "armed_bit": status.armed_flag,
             "partitions_armed": [p for p, on in status.partitions_armed.items() if on],
             "partitions_in_use": self.coordinator.partitions_in_use,
+            "partitions_alarmed": sorted(alarm.alarmed),
+            "siren_confirmed": alarm.siren,
+            "alarm_memory": status.alarm_memory,
+            "general_byte": f"0x{status.general:02x}",
         }
 
 
@@ -218,7 +225,7 @@ class Amt4010Partition(_Commandable):
         status = self.coordinator.data
         if status is None:
             return None
-        state = partition_state(status, self._partition)
+        state = partition_state(status, self._partition, self.coordinator.alarm)
         return None if state is None else _HA_STATE[state]
 
     @property

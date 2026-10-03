@@ -7,12 +7,144 @@ confidence.
 """
 from __future__ import annotations
 
+import dataclasses
+
 from .protocol import ZONE_COUNT, Status
 
 DISARMED = "disarmed"
 ARMED_AWAY = "armed_away"
 ARMED_HOME = "armed_home"
 TRIGGERED = "triggered"
+
+# Siren bit seen across reads at least this far apart before it counts:
+# arm/disarm confirmation beeps can show as "siren on" (Pehesi97), and the
+# strict read one second after a command lands right on them.
+SIREN_CONFIRM_SECONDS = 3.0
+# Key for an unpartitioned panel in the "alarmed" set.
+WHOLE_PANEL = "*"
+
+
+@dataclasses.dataclass(frozen=True)
+class AlarmView:
+    """What the tracker concluded from one status."""
+
+    siren: bool  # siren confirmed (see SIREN_CONFIRM_SECONDS)
+    alarmed: frozenset[str]  # armed partitions (or WHOLE_PANEL) that fired
+    new_zones: frozenset[int]  # zones that entered the violated map now
+    fire_event: bool
+
+    @property
+    def live(self) -> bool:
+        return self.siren or bool(self.alarmed)
+
+
+QUIET = AlarmView(siren=False, alarmed=frozenset(), new_zones=frozenset(), fire_event=False)
+
+
+def _armed_keys(status: Status) -> frozenset[str]:
+    if status.partitioned:
+        return frozenset(p for p, on in status.partitions_armed.items() if on)
+    return frozenset({WHOLE_PANEL}) if status.armed_flag else frozenset()
+
+
+@dataclasses.dataclass
+class AlarmTracker:
+    """Alarm now versus alarm memory, which the AMT 4010 status mixes up.
+
+    No bit of the status means "alarm now" (protocol.GENERAL_FIRING). What is
+    trusted instead:
+    - a zone entering the violated map, or the latched bit rising, while a
+      partition is armed: those armed partitions fired, until disarmed. The
+      status does not say which partition fired, so all armed ones show it;
+    - the siren (any of its three candidate bits), once confirmed across reads
+      (beeps are not alarms).
+    Memory left from an earlier alarm — what is already in the violated map,
+    the latched bit already set — never makes anything triggered. Memory that
+    clears completely (no zone left in the map and the latched bit off) means
+    the panel was armed again or reset: whatever fired before is over, even if
+    the disarm fell between two reads. A partial clear does not count: it may
+    be another partition's memory (one zone leaving, or the single latched bit
+    dropping while zones remain).
+
+    Events: one for every zone that enters the violated map, armed or not (each
+    is a fact the panel recorded); one when the latched bit rises or the siren
+    is confirmed with nothing reported yet in the episode. The episode ends at
+    the first quiet read.
+
+    Known gaps: a zone already in memory firing again silently is not seen (the
+    map does not change); a silent alarm that records no zone (e.g. a silent
+    panic, if the panel keeps it out of the map) is not seen either.
+    """
+
+    initialized: bool = False
+    violated: frozenset[int] = frozenset()
+    latched: bool = False
+    alarmed: frozenset[str] = frozenset()
+    episode: bool = False
+    # Not a timestamp across restarts: only whether it was confirmed, so a
+    # reload during a running siren does not drop "triggered" for one read.
+    siren_since: float | None = None
+    siren_was_confirmed: bool = False
+
+    def update(self, status: Status, now: float) -> AlarmView:
+        armed = _armed_keys(status)
+        if self.initialized:
+            new_zones = status.violated_zones - self.violated
+            rose = status.trigger_latched and not self.latched
+            cleared = (bool(self.violated) or self.latched) and not status.alarm_memory
+        else:
+            # First read ever (or after 0.1.0): what is there is memory.
+            new_zones, rose, cleared = frozenset(), False, False
+            self.initialized = True
+        self.violated = status.violated_zones
+        self.latched = status.trigger_latched
+        if cleared:
+            # The episode is left to the quiet-read rule below: a siren still
+            # sounding is the same alarm, not a new event.
+            self.alarmed = frozenset()
+        if (new_zones or rose) and armed:
+            self.alarmed |= armed
+        self.alarmed &= armed  # a disarmed partition is no longer alarmed
+        if status.siren_any:
+            if self.siren_since is None:
+                self.siren_since = now - (
+                    SIREN_CONFIRM_SECONDS if self.siren_was_confirmed else 0.0
+                )
+        else:
+            self.siren_since = None
+        siren = self.siren_since is not None and now - self.siren_since >= SIREN_CONFIRM_SECONDS
+        self.siren_was_confirmed = siren
+        live = siren or bool(self.alarmed)
+        fire = bool(new_zones) or ((rose or live) and not self.episode)
+        if fire:
+            self.episode = True
+        elif not live and not status.siren_any:
+            self.episode = False
+        return AlarmView(siren=siren, alarmed=self.alarmed, new_zones=new_zones, fire_event=fire)
+
+    def snapshot(self) -> dict | None:
+        if not self.initialized:
+            return None
+        return {
+            "violated": sorted(self.violated),
+            "latched": self.latched,
+            "alarmed": sorted(self.alarmed),
+            "episode": self.episode,
+            "siren": self.siren_was_confirmed,
+        }
+
+    @classmethod
+    def restore(cls, data: dict | None) -> AlarmTracker:
+        if not data:
+            return cls()
+        return cls(
+            initialized=True,
+            violated=frozenset(int(z) for z in data.get("violated", ())),
+            latched=bool(data.get("latched")),
+            alarmed=frozenset(str(p) for p in data.get("alarmed", ())),
+            episode=bool(data.get("episode")),
+            siren_was_confirmed=bool(data.get("siren")),
+        )
 
 
 def _contradiction(status: Status) -> bool:
@@ -34,12 +166,15 @@ def _contradiction(status: Status) -> bool:
     return any(stay.get(p) and not status.partitions_armed[p] for p in stay)
 
 
-def partition_state(status: Status, letter: str) -> str | None:
-    """One partition. A panel-wide alarm shows on every partition: the status
-    does not say which partition fired, and a quiet partition while the siren
-    runs would be a lie. A self-contradicting status is unknown here too: a
-    partition must never look disarmed when the panel says something is armed."""
-    if status.alarm_active:
+def partition_state(status: Status, letter: str, alarm: AlarmView = QUIET) -> str | None:
+    """One partition. Triggered only while armed: the status does not say
+    which partition fired, so an alarm shows on every armed partition, and a
+    disarmed one is never "triggered" (alarm memory is a separate entity).
+    A self-contradicting status is unknown here too: a partition must never
+    look disarmed when the panel says something is armed."""
+    if status.partitioned and status.partitions_armed[letter] and (
+        alarm.siren or letter in alarm.alarmed
+    ):
         return TRIGGERED
     if _contradiction(status) or not status.partitioned:
         # A partition entity of a panel that is (no longer) partitioned has no
@@ -52,9 +187,11 @@ def partition_state(status: Status, letter: str) -> str | None:
     return ARMED_AWAY
 
 
-def panel_state(status: Status, in_use: list[str]) -> str | None:
+def panel_state(status: Status, in_use: list[str], alarm: AlarmView = QUIET) -> str | None:
     """The whole panel, reconciled with the general "armed" bit.
 
+    Triggered while the alarm is live (AlarmTracker): a confirmed siren, even
+    disarmed (24 h zone, panic), or an armed partition that fired.
     Unpartitioned: the general bit decides. Partitioned: the partitions in use
     decide — all armed is away (home if any is in stay), some armed is home.
     The general bit is a consistency check only where every reading of it
@@ -62,7 +199,7 @@ def panel_state(status: Status, in_use: list[str]) -> str | None:
     means "any" or "all" partitions armed is not documented, so a partial
     arm does not test it.
     """
-    if status.alarm_active:
+    if alarm.live:
         return TRIGGERED
     if _contradiction(status):
         return None

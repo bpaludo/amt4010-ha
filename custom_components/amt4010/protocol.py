@@ -197,13 +197,18 @@ OFF_LOW_BATTERY = 46  # SDK bytes 47-52, rows 449-463 (zones 17-64)
 OFF_PGM_EXPANDER = 52  # SDK bytes 53-54, rows 465-471
 
 # General byte (SDK row 370): bit 0 problems, bit 1 siren on, bit 2 zones
-# firing, bit 3 panel armed. Pehesi97 reads bits 1 and 2 the same way.
+# firing, bit 3 panel armed. Neither bit 2 nor bit 6 says "alarm now":
+# - bit 2 stayed set for more than a day after an alarm, the panel disarmed and
+#   no zone open, while a zone stayed in the violated map (field, fw 6.6,
+#   2026-10: general 0x44); Pehesi97 issue #10 saw it rise with open
+#   zones on another AMT 4010; andregoncalvespires reads it as "some zone open";
+# - bit 6 (not in the SDK) is the trigger latched until the partition is armed
+#   again (andregoncalvespires, field captures); set in the same capture.
+# So the alarm state is derived in state.AlarmTracker, never from one bit.
 GENERAL_PROBLEM = 0x01
 GENERAL_SIREN = 0x02
 GENERAL_FIRING = 0x04
 GENERAL_ARMED = 0x08
-# Bit 6: "trigger latched until the partition is armed again" per upstream
-# andregoncalvespires; not in the SDK. Diagnostic attribute only.
 GENERAL_LATCHED_UPSTREAM = 0x40
 
 # Power byte (SDK row 387).
@@ -297,13 +302,30 @@ class Status:
         return bool(self.general & GENERAL_SIREN)
 
     @property
+    def siren_any(self) -> bool:
+        """Any of the three bits the sources give for the siren: general bit 1
+        (SDK, Pehesi97), byte 46 bit 2 (SDK), byte 46 bit 3 (andregoncalvespires,
+        "confirmed by a user" for the 4010). None is proven on this panel yet, and
+        missing a siren is worse than a contested bit: all three count."""
+        return self.siren_on or bool(
+            self.siren_pgm & (SIREN_PGM_SIREN_SDK | SIREN_PGM_SIREN_UPSTREAM)
+        )
+
+    @property
     def zones_firing(self) -> bool:
+        """General bit 2, the SDK's "zones firing". Raw only: in the field it
+        stays set with alarm memory (see GENERAL_FIRING)."""
         return bool(self.general & GENERAL_FIRING)
 
     @property
-    def alarm_active(self) -> bool:
-        """Siren or firing zones: a silent alarm has no siren."""
-        return self.siren_on or self.zones_firing
+    def trigger_latched(self) -> bool:
+        """General bit 6: trigger latched until re-armed (upstream). Raw."""
+        return bool(self.general & GENERAL_LATCHED_UPSTREAM)
+
+    @property
+    def alarm_memory(self) -> bool:
+        """The panel remembers an alarm: a violated zone or the latched bit."""
+        return bool(self.violated_zones) or self.trigger_latched
 
     @property
     def armed_flag(self) -> bool:

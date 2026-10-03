@@ -30,5 +30,5 @@ NAME_MAX_ATTEMPTS = 6
 
 EVENT_ALARM_TRIGGERED = f"{DOMAIN}_alarm_triggered"
 # Per-entry state that must outlive a coordinator (reloads) — a refused password
-# and the alarm edge. The Store carries it across restarts.
+# and the alarm tracker. The Store carries it across restarts.
 DATA_STATE = f"{DOMAIN}_state"

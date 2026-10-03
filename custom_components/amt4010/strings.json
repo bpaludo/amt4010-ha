@@ -91,6 +91,9 @@
       "siren": {
         "name": "Siren"
       },
+      "alarm_memory": {
+        "name": "Alarm memory"
+      },
       "panel_link": {
         "name": "Panel communication"
       },

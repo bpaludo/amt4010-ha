@@ -109,6 +109,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             Amt4010Siren(coordinator),
+            Amt4010AlarmMemory(coordinator),
             Amt4010Link(coordinator),
             *(Amt4010Problem(coordinator, problem) for problem in PROBLEMS),
             *(Amt4010ZoneFlag(coordinator, key, attr) for key, attr in ZONE_FLAGS.items()),
@@ -164,8 +165,8 @@ class Amt4010Zone(Amt4010Entity, BinarySensorEntity):
         if status is None:
             return {}
         attributes = {
-            # "Violada" in the SDK. Whether it is alarm memory (as the AMT 8000's
-            # "in alarm" turned out to be) is not proven for this panel.
+            # "Violada" in the SDK: alarm memory, as on the AMT 8000 (field,
+            # fw 6.6: still set more than a day after an alarm, panel disarmed).
             "violated": self.zone in status.violated_zones,
             "bypassed": self.zone in status.bypassed_zones,
         }
@@ -187,12 +188,47 @@ class Amt4010Siren(Amt4010Entity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         status = self.coordinator.data
-        return None if status is None else status.siren_on
+        return None if status is None else status.siren_any
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """On = any of the three candidate siren bits, raw; "confirmed" is what
+        the alarm state uses (seen for state.SIREN_CONFIRM_SECONDS, so not a
+        confirmation beep)."""
+        status = self.coordinator.data
+        if status is None:
+            return {}
+        return {**status.siren_bits(), "confirmed": self.coordinator.alarm.siren}
+
+
+class Amt4010AlarmMemory(Amt4010Entity, BinarySensorEntity):
+    """The panel remembers an alarm: a violated zone or the latched bit.
+
+    Memory is not an alarm in progress (that is the panel's "triggered"); it
+    stays after disarming, until the panel clears it on the next arm.
+    """
+
+    _attr_translation_key = "alarm_memory"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(self, coordinator: Amt4010Coordinator) -> None:
+        super().__init__(coordinator, "alarm_memory")
+
+    @property
+    def is_on(self) -> bool | None:
+        status = self.coordinator.data
+        return None if status is None else status.alarm_memory
 
     @property
     def extra_state_attributes(self) -> dict:
         status = self.coordinator.data
-        return {} if status is None else status.siren_bits()
+        if status is None:
+            return {}
+        return {
+            "zones": [self.coordinator.zone_label(z) for z in sorted(status.violated_zones)],
+            "general_bit2": status.zones_firing,
+            "general_bit6": status.trigger_latched,
+        }
 
 
 class Amt4010Link(Amt4010Entity, BinarySensorEntity):
