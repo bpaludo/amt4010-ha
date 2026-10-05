@@ -738,3 +738,25 @@ async def test_rollback_flag_is_not_written_on_every_door(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert hass_storage[key]["data"]["alarm_active"] is True
+
+
+async def test_two_arms_with_two_beeps_are_not_an_alarm(hass: HomeAssistant, fake_panel) -> None:
+    """0.1.2: each strict read after an arm catches the confirmation beep
+    (siren bit); two arms 4 s apart must not confirm a siren. Not freezer: the
+    post-command sleep would never end on a frozen loop."""
+    entry = await setup_entry(hass, fake_panel, enable_commands=True)
+    now = [1000.0]
+    entry.runtime_data._clock = lambda: now[0]
+    bus = async_capture_events(hass, EVENT_ALARM_TRIGGERED)
+    fake_panel.on_command[(P.CMD_ARM, b"\x41")] = {27: 0x01, 29: 0x0A}
+    fake_panel.on_command[(P.CMD_ARM, b"\x42")] = {27: 0x03, 29: 0x0A}
+    for letter in ("a", "b"):
+        await hass.services.async_call(
+            "alarm_control_panel", "alarm_arm_away",
+            {"entity_id": eid(hass, entry, f"partition_{letter}"), "code": PASSWORD},
+            blocking=True,
+        )
+        now[0] += 4
+    for key in ("panel", "partition_a", "partition_b"):
+        assert hass.states.get(eid(hass, entry, key)).state != "triggered", key
+    assert len(bus) == 0

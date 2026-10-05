@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- **Fix:** the strict read one second after a command never starts nor confirms the
+  siren. Two commands a few seconds apart (arm A, then arm B) could turn two
+  confirmation beeps into a confirmed siren: *triggered* and an alarm event with no
+  alarm. Found while reviewing the same rule in Palalab's AMT 8000 integration. It
+  only bites if a beep sets the siren bit, which is not yet proven on this panel.
+
 ## 0.1.1
 
 - **Fix: alarm memory no longer shows as *triggered*.** General bit 2 (and

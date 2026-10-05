@@ -89,8 +89,9 @@ issue #10). Neither bit says "alarm now", so since 0.1.1:
   violated map or the latched bit (general bit 6) rises; it stays so until
   disarmed. The status does not say which partition fired, so every armed
   partition shows it;
-- the siren counts once seen across reads at least 3 s apart, so an arm/disarm
-  confirmation beep is not an alarm. Any of the three candidate siren bits
+- the siren counts once seen across poll reads at least 3 s apart, so an
+  arm/disarm confirmation beep is not an alarm; the strict read right after a
+  command never starts nor confirms it. Any of the three candidate siren bits
   counts. A confirmed siren makes the panel *triggered* even when disarmed
   (24 h zone, panic);
 - memory left from an earlier alarm never makes anything *triggered*. Memory

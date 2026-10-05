@@ -103,6 +103,9 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
         # event count is shared by the bus event and the event entity.
         self._tracker = AlarmTracker()
         self.alarm: AlarmView = QUIET
+        # Monotonic for the siren confirmation; an attribute so tests can move
+        # it without freezing the event loop (the post-command sleep needs it).
+        self._clock: Callable[[], float] = time.monotonic
         self.alarm_edges = 0
         self.last_alarm_data: dict | None = None
         # Zone names: read from the panel once, kept in storage.
@@ -236,7 +239,7 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
             return self._last_status
         raise UpdateFailed(f"AMT 4010 unavailable ({self.last_failure})") from exc
 
-    def _accept(self, status: Status) -> None:
+    def _accept(self, status: Status, after_command: bool = False) -> None:
         if self._consecutive_failures:
             _LOGGER.info(
                 "AMT 4010 answered again after %d failed cycle(s), last: %s",
@@ -249,7 +252,7 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
         self.update_interval = timedelta(seconds=self._base_interval)
         self._log_change(self._last_status, status)
         self._last_status = status
-        self._track_alarm(status)
+        self._track_alarm(status, after_command)
 
     @staticmethod
     def _log_change(old: Status | None, new: Status) -> None:
@@ -275,7 +278,7 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
             return False
         except Amt4010Error:
             return False
-        self._accept(status)
+        self._accept(status, after_command=True)
         self.async_set_updated_data(status)
         return True
 
@@ -287,8 +290,8 @@ class Amt4010Coordinator(DataUpdateCoordinator[Status]):
         )
         return device.id if device else None
 
-    def _track_alarm(self, status: Status) -> None:
-        self.alarm = self._tracker.update(status, time.monotonic())
+    def _track_alarm(self, status: Status, after_command: bool = False) -> None:
+        self.alarm = self._tracker.update(status, self._clock(), after_command)
         if self.alarm.fire_event:
             self.alarm_edges += 1
             self.last_alarm_data = {

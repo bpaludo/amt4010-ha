@@ -16,9 +16,11 @@ ARMED_AWAY = "armed_away"
 ARMED_HOME = "armed_home"
 TRIGGERED = "triggered"
 
-# Siren bit seen across reads at least this far apart before it counts:
-# arm/disarm confirmation beeps can show as "siren on" (Pehesi97), and the
-# strict read one second after a command lands right on them.
+# Siren bit seen across POLL reads at least this far apart before it counts:
+# arm/disarm confirmation beeps can show as "siren on" (Pehesi97). The strict
+# read one second after a command lands right on a beep, so it never starts nor
+# confirms the siren: two commands 4 s apart would otherwise turn two beeps into
+# a siren (found reviewing the AMT 8000 0.7.0, same rule; fixed in 0.1.2).
 SIREN_CONFIRM_SECONDS = 3.0
 # Key for an unpartitioned panel in the "alarmed" set.
 WHOLE_PANEL = "*"
@@ -86,7 +88,7 @@ class AlarmTracker:
     siren_since: float | None = None
     siren_was_confirmed: bool = False
 
-    def update(self, status: Status, now: float) -> AlarmView:
+    def update(self, status: Status, now: float, after_command: bool = False) -> AlarmView:
         armed = _armed_keys(status)
         if self.initialized:
             new_zones = status.violated_zones - self.violated
@@ -105,14 +107,18 @@ class AlarmTracker:
         if (new_zones or rose) and armed:
             self.alarmed |= armed
         self.alarmed &= armed  # a disarmed partition is no longer alarmed
-        if status.siren_any:
+        if not status.siren_any:
+            self.siren_since = None
+            siren = False
+        elif after_command:
+            # Neither starts nor confirms; a siren already confirmed stays so.
+            siren = self.siren_was_confirmed
+        else:
             if self.siren_since is None:
                 self.siren_since = now - (
                     SIREN_CONFIRM_SECONDS if self.siren_was_confirmed else 0.0
                 )
-        else:
-            self.siren_since = None
-        siren = self.siren_since is not None and now - self.siren_since >= SIREN_CONFIRM_SECONDS
+            siren = now - self.siren_since >= SIREN_CONFIRM_SECONDS
         self.siren_was_confirmed = siren
         live = siren or bool(self.alarmed)
         fire = bool(new_zones) or ((rose or live) and not self.episode)

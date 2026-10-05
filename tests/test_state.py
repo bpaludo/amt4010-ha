@@ -266,6 +266,22 @@ class Tracker(unittest.TestCase):
         self.assertTrue(view.siren)
         self.assertFalse(view.fire_event)
 
+    def test_two_commands_with_two_beeps_are_not_a_siren(self) -> None:
+        """Arm A (the strict read 1 s later catches a beep), arm B 4 s later
+        (another beep), no poll between: never a siren."""
+        view = self.tracker.update(status(0x01, 0, 0x02), self.now + 1, after_command=True)
+        self.assertFalse(view.siren or view.live)
+        view = self.tracker.update(status(0x03, 0, 0x02), self.now + 5, after_command=True)
+        self.assertFalse(view.siren or view.live or view.fire_event)
+        self.now += 5
+        self.assertFalse(self.read(status(0x03)).siren)
+
+    def test_a_confirmed_siren_survives_a_command(self) -> None:
+        self.read(status(0x01, 0, 0x02))
+        self.assertTrue(self.read(status(0x01, 0, 0x02)).siren)
+        view = self.tracker.update(status(0x00, 0, 0x02), self.now + 1, after_command=True)
+        self.assertTrue(view.siren)
+
     def test_silent_zone_while_disarmed(self) -> None:
         view = self.read(status(violated=(22,)))
         self.assertTrue(view.fire_event)
